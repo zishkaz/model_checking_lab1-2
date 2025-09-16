@@ -1,0 +1,161 @@
+/--
+  МОДЕЛЬ: Автомат выдачи корма для белок (nuXmv)
+
+  Архитектура:
+    1) Управляющий алгоритм:   feeder_controller
+    2) Датчики/индикаторы:     sensor (кнопки, картридер, пополнение)
+    3) Актуаторы:              импульсы dispense_left / dispense_right (в контроллере)
+    4) Среда/пользователь:     environment (недетерминистические события)
+    5) Бесконечная работа:     FAIRNESS / JUSTICE-условия
+--/
+
+-- Универсальный модуль датчика --
+MODULE sensor(activate)
+VAR
+  active : boolean;
+ASSIGN
+  init(active) := FALSE;
+  next(active) :=
+    case
+      activate : {TRUE, FALSE};
+      TRUE     : active;
+    esac;
+
+FAIRNESS running
+
+-- Среда/пользователь: генерирует события
+MODULE environment
+VAR
+  generate_select_left  : boolean;
+  generate_select_right : boolean;
+  generate_card_present : boolean;
+  generate_pay_ok       : boolean;
+  generate_restock_left : boolean;
+  generate_restock_right: boolean;
+
+ASSIGN
+  init(generate_select_left)   := FALSE;
+  init(generate_select_right)  := FALSE;
+  init(generate_card_present)  := FALSE;
+  init(generate_pay_ok)        := FALSE;
+  init(generate_restock_left)  := FALSE;
+  init(generate_restock_right) := FALSE;
+
+  next(generate_select_left)    := {TRUE, FALSE};
+  next(generate_select_right)   := {TRUE, FALSE};
+  next(generate_card_present)   := {TRUE, FALSE};
+  next(generate_pay_ok)         := {TRUE, FALSE};
+  next(generate_restock_left)   := {TRUE, FALSE};
+  next(generate_restock_right)  := {TRUE, FALSE};
+
+INVAR !(generate_select_left & generate_select_right)
+
+JUSTICE (generate_select_left | generate_select_right)
+JUSTICE (generate_card_present & generate_pay_ok)
+JUSTICE (generate_restock_left | generate_restock_right)
+
+FAIRNESS running
+
+MODULE feeder_controller(
+    left_btn, right_btn,
+    card_present, pay_ok,
+    restock_left, restock_right
+)
+VAR
+  state     : {IDLE, WAIT_PAYMENT};
+  selection : {none, left, right};
+  paid_for  : {none, left, right};
+
+  stock_left  : 0..5;
+  stock_right : 0..5;
+
+DEFINE
+  will_dispense_left  := state = WAIT_PAYMENT & (paid_for = left)  & (selection = left)  & (stock_left  > 0);
+  will_dispense_right := state = WAIT_PAYMENT & (paid_for = right) & (selection = right) & (stock_right > 0);
+  dispense_left  := will_dispense_left;
+  dispense_right := will_dispense_right;
+
+ASSIGN
+  init(state)     := IDLE;
+  init(selection) := none;
+  init(paid_for)  := none;
+
+  init(stock_left)  := 3;
+  init(stock_right) := 3;
+
+  next(selection) :=
+    case
+      (dispense_left | dispense_right)                  : none;
+      state = WAIT_PAYMENT & paid_for != none           : selection;
+      left_btn                                          : left;
+      right_btn                                         : right;
+      TRUE                                              : selection;
+    esac;
+
+  next(paid_for) :=
+    case
+      paid_for = none & card_present & pay_ok & selection != none : selection;
+      (dispense_left | dispense_right)                            : none;
+      TRUE                                                        : paid_for;
+    esac;
+
+  -- STOCK UPDATE: decrement exactly on the firing step; restock otherwise
+  next(stock_left) :=
+    case
+      will_dispense_left                                : stock_left - 1;
+      restock_left  & stock_left < 5                    : stock_left + 1;
+      TRUE                                              : stock_left;
+    esac;
+
+  next(stock_right) :=
+    case
+      will_dispense_right                               : stock_right - 1;
+      restock_right & stock_right < 5                   : stock_right + 1;
+      TRUE                                              : stock_right;
+    esac;
+
+  next(state) :=
+    case
+      state = IDLE         & selection != none                 : WAIT_PAYMENT;
+      state = WAIT_PAYMENT & (will_dispense_left | will_dispense_right) : IDLE;
+      TRUE                                                     : state;
+    esac;
+
+MODULE main
+VAR
+  env : process environment();
+
+  left_button_sensor   : process sensor(env.generate_select_left);
+  right_button_sensor  : process sensor(env.generate_select_right);
+
+  card_present_sensor  : process sensor(env.generate_card_present);
+  pay_ok_sensor        : process sensor(env.generate_pay_ok);
+
+  restock_left_sensor  : process sensor(env.generate_restock_left);
+  restock_right_sensor : process sensor(env.generate_restock_right);
+
+  controller : feeder_controller(
+    left_button_sensor.active,
+    right_button_sensor.active,
+    card_present_sensor.active,
+    pay_ok_sensor.active,
+    restock_left_sensor.active,
+    restock_right_sensor.active
+  );
+
+
+-- СПЕЦИФИКАЦИИ --
+-- SAFETY 1: Никогда не выдаём две порции одновременно --
+INVARSPEC !(controller.dispense_left & controller.dispense_right)
+
+-- SAFETY 2: Пустой лоток => выдача невозможна --
+INVARSPEC controller.stock_left  = 0 -> !controller.dispense_left
+INVARSPEC controller.stock_right = 0 -> !controller.dispense_right
+
+-- LIVENESS 1: После успешной оплаты выбранного товара — рано или поздно выдача --
+LTLSPEC G (controller.paid_for = left  & controller.selection = left  & controller.stock_left  > 0 -> F controller.dispense_left)
+LTLSPEC G (controller.paid_for = right & controller.selection = right & controller.stock_right > 0 -> F controller.dispense_right)
+
+-- LIVENESS 2: При выдаче запас убывает ровно на 1 в следующем состоянии --
+LTLSPEC G (controller.dispense_left  -> next(controller.stock_left)  = controller.stock_left  - 1)
+LTLSPEC G (controller.dispense_right -> next(controller.stock_right) = controller.stock_right - 1)
