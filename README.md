@@ -41,3 +41,44 @@
    `LTLSPEC G (controller.dispense_right -> X controller.stock_right = controller.stock_right - 1)`
 
 *Как минимум два свойства — safety — гарантированно выполняются, а liveness — при заданной справедливости событий среды.*
+
+# Лабораторная работа №2 — SPIN
+**Тема:** автомат выдачи корма для белок с двумя лотками (левый — 50₽, правый — 75₽).
+
+---
+
+## Соответствие требованиям
+- [✓] **Процесс управляющего алгоритма** — `Controller`
+- [✓] **Процессы датчиков/индикаторов** — `Sensors` (ретрансляция событий среды)
+- [✓] **Процессы актуаторов** — `Actuators` (реакция на `cmd_dispense_*`)
+- [✓] **Процесс среды** — `Environment` (недетерминированные события по кругу)
+- [✓] **Бесконечная работа** — за счёт бесконечного цикла в `Environment`
+- [✓] **Различные свойства LTL (≥3)** — см. раздел ниже
+
+---
+
+## Файлы
+- `squirrel_feeder.pml` — модель Promela + встроенные LTL-свойства
+
+---
+
+## Свойства LTL
+
+1. **Safety: нет двойной выдачи**
+```promela
+ltl no_double_dispense { [] !(dispense_left_pulse && dispense_right_pulse) }
+```
+2. **Safety: нельзя выдавать из пустого лотка**
+```promela
+ltl no_dispense_from_empty {
+  [] ((stock_left == 0 -> !dispense_left_pulse) &&
+      (stock_right == 0 -> !dispense_right_pulse))
+}
+```
+3. **Liveness: после оплаты выбранного товара (и при положительном запасе) — выдача случится**
+```promela
+ltl eventual_dispense_after_pay {
+  [] ( ((paid_for == left  && selection == left  && stock_left  > 0) -> <> (dispense_left_pulse)) &&
+       ((paid_for == right && selection == right && stock_right > 0) -> <> (dispense_right_pulse)) )
+}
+```
